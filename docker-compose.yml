@@ -1,0 +1,33 @@
+services:
+  rag_service:
+    container_name: rag_service1
+    build:
+      context: ./rag_service1
+      dockerfile: Dockerfile
+    working_dir: /app
+    ports:
+      - "8100:8100"  # Открываем WebSocket на 8000 порту
+    environment:
+      - GIGACHAT_API_KEY="NzU0ZjA2NzctYjlmOC00M2UxLWExNWQtNmQwNTIxMjg1Yzc3OmZlMTNiZGEzLTc2MzgtNGExZS1hODY5LTA3MGRmNTU2MTgyNg=="
+      - TELEGRAM_API_KEY="7979282999:AAFqObbyPd6AzA4sW2Mm4w_BoPb0x0UKvB4"
+   # restart: always
+    networks:
+      - app_network
+
+  monitor:
+    container_name: monitor_service
+    build: ./monitor
+    restart: always
+    depends_on:
+      - rag_service
+    environment:
+    #  - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    #  - ALERT_CHAT_ID=${ALERT_CHAT_ID}
+      - ALERT_BOT_TOKEN="7769496605:AAHGyUTvWUm8FtCUc7BYxISkKESovLupeSs"
+      - API_URL=http://rag_service1:8100/health
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
