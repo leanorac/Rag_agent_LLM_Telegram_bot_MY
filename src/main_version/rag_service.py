@@ -123,10 +123,15 @@ async def websocket_endpoint(websocket: WebSocket):
     role = await websocket.receive_text()
     specialization = await websocket.receive_text()
     question_id = await websocket.receive_text()
+    context = await websocket.receive_text()
+    print(context)
+    count = await websocket.receive_text()
     question_id = int(question_id)
+    count = int(count)
     print(question)
     print(role)
     print(specialization)
+    print(count)
     prompt_template = ""
     embedding_retriever = embedding_retriever_full
     if (question_id == 1):
@@ -471,7 +476,7 @@ async def websocket_endpoint(websocket: WebSocket):
         '''
     
     
-    elif(question_id == 777):
+    else:
         embedding_retriever = embedding_retriever_full
 
         prompt_template = '''
@@ -499,20 +504,84 @@ async def websocket_endpoint(websocket: WebSocket):
     # Задаем массив лишних символов
     unwanted_chars = ["*", "**"]
     # Запускаем стриминг ответа
-    async for chunk in retrieval_chain.astream({'input': question}):
-        if chunk:
-                # Извлекаем ответ
-            answer = chunk.get("answer", "").strip()
+    if (count == 1):
+        async for chunk in retrieval_chain.astream({'input': question}):
+            if chunk:
+                    # Извлекаем ответ
+                answer = chunk.get("answer", "").strip()
 
-                # Заменяем ненужные символы
+                    # Заменяем ненужные символы
+                for char in unwanted_chars:
+                    answer = answer.replace(char, " ")
+                    
+                answer = " ".join(answer.split())  # Удаляем лишние пробелы
+                    
+                await websocket.send_text(answer)  # Отправляем очищенный текстовый ответ
+
+    elif(count > 1 and count < 10):
+        for chunk in GigaChat(credentials=api_key,
+                              verify_ssl_certs=False,
+                                model='GigaChat'
+                                ).stream(f"Использую контекст нашей прошлой беседы {context}, ответь на уточняющий вопрос {question}"):
+            answer = chunk.content.strip()  # Используем атрибут .content
+
+            # Заменяем ненужные символы
             for char in unwanted_chars:
                 answer = answer.replace(char, " ")
-                
-            answer = " ".join(answer.split())  # Удаляем лишние пробелы
-                
-            await websocket.send_text(answer)  # Отправляем очищенный текстовый ответ
+
+            # Удаляем лишние пробелы
+            answer = " ".join(answer.split())
+
+            # Отправляем ответ через WebSocket
+            await websocket.send_text(answer)
+        
+    elif(count == 101):
+        promt = '''
+                Вы исполняете роль помощника, анализируете информацию и предлагаете темы.
+                Задача — выявить ключевые темы и контекст, а затем предложить релевантные вопросы или темы для углубления обсуждения.
+
+                Вот история нашего с тобой диалога $context
+
+                ### Ваши функции:
+                1. Анализ сообщений: Проанализируйте текст для выявления основной темы.
+                2. Предложение тем: Предложите вопросы или темы, которые помогут пользователю углубить свои знания, развить навыки или решить конкретную задачу.
+                3. Контекстуальная адаптация: Убедитесь, что предложения соответствуют контексту диалога и роли пользователя.
+                4. Проактивное взаимодействие: Если контекст недостаточен для формирования предложений, предложите близкую тему.
+
+                ### Требования к ответу:
+                - Ответ должен быть лаконичным, но содержательным.
+                - Предложенные вопросы или темы должны быть четко связаны с диалогом и профессиональной деятельностью пользователя.
+                - Избегайте общих фраз; вместо этого предлагайте конкретные направления для размышлений или действий.
+            
+                ### Структура ответа:
+                1. Краткое резюме: Опишите основную тему.
+                2. Проактивное предложение: Предложите релевантный вопрос или тему для дальнейшего обсуждения.
+                3. Объяснение полезности: Объясните, почему это предложение может быть полезным для пользователя (например, как оно поможет развить навыки, решить проблему или улучшить процесс работы).
+
+                ### Пример структуры ответа:
+                "На основе предоставленных сообщений я заметил, что мы обсуждали [основная тема]. Это важный аспект работы [роли пользователя], так как [объяснение значимости]. 
+                Я предлагаю обсудить [предложенная тема или вопрос], поскольку это поможет вам [конкретная польза]. Например, мы можем рассмотреть [пример или направление]."
+                '''
+        template = string.Template(promt)
+        filled_prompt = template.substitute(context=context)
+        print(filled_prompt)
+        for chunk in GigaChat(credentials=api_key,
+                              verify_ssl_certs=False,
+                                model='GigaChat'
+                                ).stream(filled_prompt):
+            answer = chunk.content.strip()  # Используем атрибут .content
+
+            # Заменяем ненужные символы
+            for char in unwanted_chars:
+                answer = answer.replace(char, " ")
+
+            # Удаляем лишние пробелы
+            answer = " ".join(answer.split())
+
+            # Отправляем ответ через WebSocket
+            await websocket.send_text(answer)
     
-    await websocket.close()
+    await websocket.close()    
 
 if __name__ == "__main__":
     import uvicorn

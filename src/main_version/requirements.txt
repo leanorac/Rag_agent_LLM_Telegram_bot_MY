@@ -9,3 +9,5 @@ langchain_community
 langchain_gigachat
 langchain_huggingface
 sentence-transformers
+schedule
+pytz

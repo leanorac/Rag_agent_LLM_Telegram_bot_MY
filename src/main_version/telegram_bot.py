@@ -7,9 +7,18 @@ import requests
 import json
 import time
 import os
+import sqlite3
+import schedule
+from datetime import datetime, UTC 
+import threading
+import pytz
 load_dotenv()
 
 WEBSOCKET_URL = "ws://127.0.0.1:8000/ws"
+moscow_tz = pytz.timezone('Europe/Moscow')
+
+dialogue_context = {}
+count_questions_users = {}
 
 secret_key = os.getenv("TELEGRAM_API_KEY")
 cache_dict = {3 : ["Уровень Junior\nСофты:\n1. Желание учиться которое подтверждается делом.(Что изучено за последний год? Как это применяется?).\n2. Проактивная работа с заказчиком.(Инициатива по вопросам/запросу ОС должна поступать от специалиста).\n3. Умение принимать ОС.\n4. Многозадачность - в термин (многозадачность) вкладывается НЕ возможность в каждый момент времени думать сразу о нескольких задачах, а возможность переключаться между задачами/проектами (от 2х - оптимально, до 5ти - максимально) без сильной потери эффективности (что какая-то потеря эффективности будет - факт).",
@@ -32,23 +41,274 @@ cache_dict = {3 : ["Уровень Junior\nСофты:\n1. Желание учи
 
 # Токен Telegram-бота
 bot = telebot.TeleBot(secret_key)
-
 # Словарь для хранения данных пользователя
 user_data = {}
 
 # Функция для дообогащения промпта
 
+#conn = sqlite3.connect('AI_agent.db')
+#cursor = conn.cursor()
+#cursor.execute('''
+#DROP TABLE Reminder
+#''')
+#conn.commit()
+#conn.close()
+#print("2\n")
+# Создание таблицы, если она не существует
+
+def init_db():
+    # Подключаемся к базе данных (или создаем ее, если она не существует)
+    conn = sqlite3.connect('AI_agent.db')
+    cursor = conn.cursor()
+
+    try:
+        # Создаем таблицу Users
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Users (
+            user_id INTEGER PRIMARY KEY,
+            role TEXT DEFAULT NULL
+        )
+        ''')
+
+        # Создаем таблицу Reminder
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Reminder (
+        id_rem INTEGER PRIMARY KEY AUTOINCREMENT, 
+        user_id INTEGER,
+        reminder_text TEXT DEFAULT NULL,
+        reminder_time TEXT DEFAULT NULL,
+        FOREIGN KEY (user_id) REFERENCES Users(user_id)
+        )
+        ''')
+
+        # Создаем таблицу Message_history
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS Message_history (
+        user_id INTEGER, 
+        role TEXT CHECK(role IN ('user', 'assistant')),
+        message TEXT NOT NULL,
+        time DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES Users(user_id)
+        )
+        ''')
+
+        # Фиксируем изменения в базе данных
+        conn.commit()
+    except Exception as e:
+        # В случае ошибки откатываем изменения
+        conn.rollback()
+        print(f"Ошибка при создании таблиц: {e}")
+    finally:
+        # Закрываем соединение с базой данных
+        conn.close()
+
+# Вызов функции для инициализации базы данных
+init_db()
+
+def save_message_in_db(chat_id, role, message):
+    try:
+        conn = sqlite3.connect('AI_Agent.db')
+        cursor = conn.cursor()
+        time = datetime.now() 
+        cursor.execute('''
+        INSERT INTO Message_history (user_id, role, message, time)
+        VALUES (?, ?, ?, ?)
+        ''', (chat_id, role, message, time))
+        conn.commit()
+        conn.close()
+    except sqlite3.Error as e:
+        # Обработка ошибок базы данных
+        print( f"Ошибка при сохранении сообщения в историю: {e}")
+
+def take_history_dialog_from_db(chat_id):
+    conn = sqlite3.connect('AI_Agent.db') 
+    cursor = conn.cursor()
+
+    # Запрос для получения истории сообщений в одну строку по user_id
+    user_id = chat_id 
+    query = '''
+    SELECT 
+        GROUP_CONCAT(role || ': ' || message || ' (' || time || ')', '; ') AS full_history
+    FROM Message_history
+    WHERE user_id = ?
+    GROUP BY user_id;
+    
+    '''
+
+    # Выполнение запроса
+    cursor.execute(query, (user_id,))
+    result = cursor.fetchone()
+
+    conn.close()
+    return result
+
 # Обработчик команды /start
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
+    user_id = message.chat.id
+    conn = sqlite3.connect('AI_Agent.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM Users WHERE user_id = ?", (user_id,))
+    existing_user = cursor.fetchone()
+
+
+    if existing_user:
+        print(f"Пользователь с ID {user_id} уже существует в базе данных.")
+    else:
+        # Вставляем user_id в таблицу
+        cursor.execute("INSERT INTO Users (user_id) VALUES(?)", (user_id,))
+        conn.commit()
+        print(f"Пользователь с ID {user_id} успешно добавлен в базу данных.")
+    # Выводим всех пользователей для проверки
+    cursor.execute("SELECT * FROM Users")
+    users = cursor.fetchall()
+    print("Текущие пользователи в базе данных:")
+    for user in users:
+        print(user[0], user[1])  # user[0], так как fetchall() возвращает кортежи
     markup = types.InlineKeyboardMarkup()
     button = types.InlineKeyboardButton(text="Начать", callback_data="start")
     markup.add(button)
     bot.send_message(message.chat.id, "Добро пожаловать! Нажмите кнопку ниже, чтобы начать:", reply_markup=markup)
+    conn.close()
+    
 
 # Обработчик нажатия кнопки Start
 @bot.callback_query_handler(func=lambda call: call.data == "start")
-def handle_start(call):
+def handle_start(message_or_call):
+    # Определяем chat_id в зависимости от типа объекта (message или call)
+    if isinstance(message_or_call, telebot.types.Message):
+        chat_id = message_or_call.chat.id
+    else:
+        chat_id = message_or_call.message.chat.id
+    
+    # Отменяем текущий обработчик следующего шага
+    bot.clear_step_handler_by_chat_id(chat_id)  # Передаем chat_id (число), а не объект
+    
+    # Создаем клавиатуру с кнопками
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    roles = [
+        types.InlineKeyboardButton(text="Задать вопрос по роли", callback_data="menu_qr"),
+        types.InlineKeyboardButton(text="Выбрать роль", callback_data="menu_r"),
+        types.InlineKeyboardButton(text="Поставьте напоминание", callback_data="menu_rem")
+    ]
+    markup.add(*roles)
+    
+    # Отправляем новое сообщение с главным меню
+    bot.send_message(chat_id, "Главное меню:", reply_markup=markup)
+
+# Обработчик нажатия кнопки "Поставьте напоминание"
+@bot.callback_query_handler(func=lambda call: call.data == "menu_rem")
+def handle_reminder(call):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    back_button = types.InlineKeyboardButton(text="В начало", callback_data="start")
+    markup.add(back_button)
+    msg = bot.send_message(call.message.chat.id, "Введите время напоминания в формате HH:MM и текст напоминания через пробел.\nНапример: 14:30 Рассказать про uc", reply_markup=markup)
+    bot.register_next_step_handler(msg, lambda message: process_reminder_input(message, call))
+
+# Обработчик ввода времени и текста напоминания
+def process_reminder_input(message, call):
+    try:
+        # Разделяем ввод на время и текст
+        time_str, reminder_text = message.text.split(maxsplit=1)
+        
+        # Проверяем формат времени
+        datetime.strptime(time_str, "%H:%M")  # Если время не в формате HH:MM, выбросится исключение
+        
+        # Сохраняем напоминание в базу данных
+        conn = sqlite3.connect('AI_Agent.db')
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO Reminder (user_id, reminder_text, reminder_time) VALUES (?, ?, ?)",
+            (message.chat.id, reminder_text, time_str)  # По умолчанию напоминание одноразовое
+        )
+        conn.commit()
+        conn.close()
+        
+        # Отправляем сообщение об успешном создании напоминания
+        bot.send_message(message.chat.id, f"Напоминание установлено на {time_str}: {reminder_text}")
+        handle_start(call)
+        
+    except ValueError:
+        # Обработка ошибки неверного формата времени
+        bot.send_message(message.chat.id, "Неверный формат времени. Используйте HH:MM.")
+        handle_start(call)
+    except sqlite3.Error as e:
+        # Обработка ошибок базы данных
+        bot.send_message(message.chat.id, f"Ошибка при сохранении напоминания: {e}")
+
+# Асинхронная функция для проверки и отправки напоминаний
+async def check():
+    while True:
+        conn = sqlite3.connect('AI_Agent.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Получаем текущее время в формате HH:MM
+        current_time = datetime.now().strftime("%H:%M")
+        time_for_send_messages = "10:00"
+        
+        # Выбираем все напоминания
+        cursor.execute("SELECT * FROM Users;")
+        reminders_results = cursor.fetchall()
+        if(current_time == time_for_send_messages):
+            for reminder in reminders_results:
+
+                chat_id = reminder['user_id']
+                wanted_simbols = [".", ":"]
+                context_str = take_history_dialog_from_db(chat_id)
+                question_id = 666
+                role = 'Аналитик'
+                specialization = 'Специалист'
+                count_for_pro_activity = 101
+                question = 'without'
+                async with websockets.connect(WEBSOCKET_URL) as websocket:
+                    await websocket.send(question) # Отправляем вопрос
+                    await websocket.send(role)
+                    await websocket.send(specialization)
+                    await websocket.send(str(question_id))
+                    await websocket.send(context_str)
+                    await websocket.send(str(count_for_pro_activity))
+                    try:
+                        full_answer = ""
+                        while True:
+                            answer_part = await websocket.recv()  # Получаем ответ частями
+                            if answer_part:
+                                for char in answer_part:
+                                    if (char in wanted_simbols):
+                                        answer_part += "\n"
+
+                                full_answer += answer_part
+                            else:
+                                print("Получено пустое сообщение от WebSocket.")
+                        
+                    except websockets.exceptions.ConnectionClosed:
+                        bot.send_message(chat_id=chat_id, text = full_answer)
+                    
+        
+        conn.close()
+        await asyncio.sleep(60)  # Проверяем каждую минуту
+
+# Функция для запуска асинхронной задачи
+async def start():
+    current_sec = int(datetime.now().strftime("%S"))
+    delay = 60 - current_sec
+    if delay == 60:
+        delay = 0
+    
+    await asyncio.sleep(delay)
+    await check()
+
+# Запуск асинхронной задачи в отдельном потоке
+def run_async_task():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(start())
+
+# Обработчик нажатия кнопки Выбор роли
+@bot.callback_query_handler(func=lambda call: call.data == "menu_qr")
+def handle_role(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
     roles = [
         types.InlineKeyboardButton(text="PO/PM", callback_data="role_PM"),
@@ -58,9 +318,64 @@ def handle_start(call):
     markup.add(*roles)
     bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Выберите вашу роль:", reply_markup=markup)
 
+def clear_dialog_context(chat_id):
+    if chat_id in dialogue_context:
+        dialogue_context[chat_id] = []
+    if chat_id in count_questions_users:
+        count_questions_users[chat_id] = 0
+
+# Обработчик выбора роли
+@bot.callback_query_handler(func=lambda call: call.data.startswith("menu_r"))
+def choose_menu(call):
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    roles = [
+        types.InlineKeyboardButton(text="Аналитик", callback_data="specsql_analyst"),
+        types.InlineKeyboardButton(text="Тестировщик", callback_data="specsql_tester"),
+        types.InlineKeyboardButton(text="WEB", callback_data="specsql_web"),
+        types.InlineKeyboardButton(text="Java", callback_data="specsql_java"),
+        types.InlineKeyboardButton(text="Python", callback_data="specsql_python"),
+        types.InlineKeyboardButton(text="В начало", callback_data="start"),
+    ]
+    markup.add(*roles)
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Выберите роль:", reply_markup=markup)
+
+ # Обработка выбора специализации
+@bot.callback_query_handler(func=lambda call: call.data.startswith( "specsql_"))
+def handle_role_specialization(call):
+    user_id = call.message.chat.id
+    data = call.data
+    conn = sqlite3.connect('AI_Agent.db')
+    cursor = conn.cursor()
+    specialization_mapping = {
+        "specsql_analyst": "Аналитик",
+        "specsql_tester": "Тестировщик",
+        "specsql_web": "WEB",
+        "specsql_java": "Java",
+        "specsql_python": "Python"
+    }
+    specialization = specialization_mapping.get(data)
+    cursor.execute("UPDATE Users SET role = ? WHERE user_id = ?", (specialization, user_id))
+    conn.commit()
+    bot.answer_callback_query(call.id, f"Специализация '{specialization}' успешно сохранена!")
+    cursor.execute("SELECT user_id, role FROM Users WHERE user_id = ?", (user_id,))
+    users= cursor.fetchone()
+
+    if users:
+        # user_data — это кортеж, например: (123456789, "Аналитик")
+        print(f"User ID: {users[0]}, Role: {users[1]}")
+    conn.close()
+
+
+    # Возврат в меню
+    handle_start(call)
+
+
+
 # Обработчик выбора роли
 @bot.callback_query_handler(func=lambda call: call.data.startswith("role_"))
 def choose_role(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     role_mapping = {
         "role_PM": "PO/PM",
         "role_lead": "Лид компетенций",
@@ -99,6 +414,8 @@ def choose_role(call):
 # Обработчик выбора специализации
 @bot.callback_query_handler(func=lambda call: call.data.startswith("spec_"))
 def choose_specialization(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     spec_mapping = {
         "spec_analyst": "Аналитик",
         "spec_tester": "Тестировщик",
@@ -142,6 +459,8 @@ def choose_specialization(call):
 @bot.callback_query_handler(func=lambda call: call.data.startswith("questions_group"))
 def handle_predefined_question_group(call):
     switcher = 0
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     if call.data == "questions_group_2":
         switcher = 1
     
@@ -170,6 +489,8 @@ def handle_predefined_question_group(call):
     
 @bot.callback_query_handler(func=lambda call: call.data.startswith("group_1"))
 def handle_predefined_question_group_1(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     role = ""
     specialization = ""
     question_id = 777
@@ -198,13 +519,15 @@ def handle_predefined_question_group_1(call):
         question_id = 10
 
     if (question_id not in cache_dict):
-        asyncio.run(test_websocket(question, call.message, role, specialization, question_id))
+        asyncio.run(websocket_question_from_user(question, call.message, role, specialization, question_id))
     else:
-        handling_cached_requests(question_id, call.message)
+        handling_cached_requests(question_id, call.message, question)
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("group_2"))
 def handle_predefined_question_group_2(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     role = ""
     specialization = ""
     question_id = 777
@@ -230,12 +553,14 @@ def handle_predefined_question_group_2(call):
         question_id = 14
 
     if (question_id not in cache_dict):
-        asyncio.run(test_websocket(question, call.message, role, specialization, question_id))
+        asyncio.run(websocket_question_from_user(question, call.message, role, specialization, question_id))
     else:
-        handling_cached_requests(question_id, call.message)
+        handling_cached_requests(question_id, call.message, question)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("po_question"))
 def handle_predefined_question_group_2(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     role = ""
     specialization = ""
     question_id = 777
@@ -259,14 +584,16 @@ def handle_predefined_question_group_2(call):
         question_id = 17
 
     if (question_id not in cache_dict):
-        asyncio.run(test_websocket(question, call.message, role, specialization, question_id))
+        asyncio.run(websocket_question_from_user(question, call.message, role, specialization, question_id))
     else:
-        handling_cached_requests(question_id, call.message)
+        handling_cached_requests(question_id, call.message, question)
 
 
 
 @bot.callback_query_handler(func=lambda call: call.data in ["question_1", "question_2", "question_3", "question_4", "question_5"])
 def handle_predefined_question(call):
+    chat_id = call.message.chat.id
+    clear_dialog_context(chat_id)
     role = ""
     specialization = ""
     question_id = 777
@@ -296,9 +623,9 @@ def handle_predefined_question(call):
     
     
     if (question_id not in cache_dict):
-        asyncio.run(test_websocket(question, call.message, role, specialization, question_id))
+        asyncio.run(websocket_question_from_user(question, call.message, role, specialization, question_id))
     else:
-        handling_cached_requests(question_id, call.message)
+        handling_cached_requests(question_id, call.message, question)
 
 @bot.callback_query_handler(func=lambda call: call.data == "question_777")
 def hadl_print_in_development(call):
@@ -316,8 +643,7 @@ def ask_custom_question(call):
     bot.register_next_step_handler(call.message, process_custom_question)
 
 
-def process_custom_question(message):
-
+def process_custom_question(message):   
     if message.chat.id not in user_data:
         user_data[message.chat.id] = {"role": "Специалист", "specialization": "Аналитик"}
 
@@ -326,35 +652,67 @@ def process_custom_question(message):
 
     question_id = 777
     question = message.text
-    asyncio.run(test_websocket(question, message, role, specialization, question_id))
+    asyncio.run(websocket_question_from_user(question, message, role, specialization, question_id))
 
-def handling_cached_requests(question_id, message):
+def handling_cached_requests(question_id, message, question):
     print("Кешированное сообщение")
 
     arr = cache_dict[question_id]
+    full_ans_for_context = ""
+
+    chat_id = message.chat.id
+    if chat_id not in dialogue_context:
+        dialogue_context[chat_id] = []
+    dialogue_context[chat_id].append({"role": "user", "content": question})
+    if chat_id not in count_questions_users:
+        count_questions_users[chat_id] = 0
+    count_questions_users[chat_id] += 1
+    save_message_in_db(chat_id, "user", question)
 
     # Отправляем каждую часть с задержкой
     for i in arr:
-        bot.send_message(chat_id=message.chat.id, text=i)
+        message_2 = bot.send_message(chat_id=message.chat.id, text=i)
+        full_ans_for_context += i
         time.sleep(1)
+    
+    dialogue_context[chat_id].append({"role": "assistant", "content": full_ans_for_context})
+    save_message_in_db(chat_id, "assistant", full_ans_for_context)
+    markup = types.InlineKeyboardMarkup()
+    button = [types.InlineKeyboardButton(text="Ввести уточняющее сообщение", callback_data="question_custom"),
+                    types.InlineKeyboardButton(text="Вернуться в начало", callback_data="start")
+                ]
+    markup.add(*button)
+    bot.send_message(chat_id=message_2.chat.id, text = "Пожалуйста, выберите дальнейшее действие", reply_markup=markup)
 
-    send_welcome(message)
-
-async def test_websocket(question, message, role, specialization, question_id):
+async def websocket_question_from_user(question, message, role, specialization, question_id):
     print(question)
     wanted_simbols = [".", ":"]
+
+    chat_id = message.chat.id
+    print(chat_id)
+    if chat_id not in dialogue_context:
+        dialogue_context[chat_id] = []
+    dialogue_context[chat_id].append({"role": "user", "content": question})
+    save_message_in_db(chat_id, "user", question)
+    context_str = json.dumps(dialogue_context[chat_id], ensure_ascii=False, indent=4)
+    if chat_id not in count_questions_users:
+        count_questions_users[chat_id] = 0
+    count_questions_users[chat_id] += 1
 
     async with websockets.connect(WEBSOCKET_URL) as websocket:
         await websocket.send(question) # Отправляем вопрос
         await websocket.send(role)
         await websocket.send(specialization)
         await websocket.send(str(question_id))
+        await websocket.send(context_str)
+        await websocket.send(str(count_questions_users[chat_id]))
 
         try:
             message_2 = bot.send_message(message.chat.id, "Ожидайте ответа...")
             full_answer = ""
             last_send_time = time.time()
             answer_for_cache = []
+            answer_for_countinue_dialog = ""
             while True:
                 answer_part = await websocket.recv()  # Получаем ответ частями
                 if answer_part:
@@ -365,8 +723,9 @@ async def test_websocket(question, message, role, specialization, question_id):
                     full_answer += answer_part
                     if time.time() - last_send_time >= 1:
                         try:
-                            bot.send_message(chat_id=message_2.chat.id, text=full_answer)
+                            message_2 = bot.send_message(chat_id=message_2.chat.id, text=full_answer)
                             answer_for_cache.append(full_answer)
+                            answer_for_countinue_dialog += full_answer
                             full_answer = ""
                             last_send_time = time.time()
                         except telebot.apihelper.ApiTelegramException as e:
@@ -374,7 +733,8 @@ async def test_websocket(question, message, role, specialization, question_id):
                                 retry_after = int(e.result.headers.get('Retry-After', 1))
                                 print(f"Rate limit exceeded. Retrying after {retry_after} seconds...")
                                 time.sleep(retry_after)
-                                bot.send_message(chat_id=message_2.chat.id, text=full_answer)
+                                message_2 = bot.send_message(chat_id=message_2.chat.id, text=full_answer)
+                                answer_for_countinue_dialog += full_answer
                                 answer_for_cache.append(full_answer)
                                 last_send_time = time.time()
                                 full_answer = ""
@@ -383,20 +743,65 @@ async def test_websocket(question, message, role, specialization, question_id):
             
         except websockets.exceptions.ConnectionClosed:
             if (full_answer != ""):
-                bot.send_message(chat_id=message_2.chat.id, text=full_answer)
+                message_2 = bot.send_message(chat_id=message_2.chat.id, text=full_answer)
                 answer_for_cache.append(full_answer)
+                answer_for_countinue_dialog += full_answer
             print("")
             if(question_id != 777):
                 cache_dict[question_id] = answer_for_cache
             
-        
-        send_welcome(message_2)
+        dialogue_context[chat_id].append({"role": "assistant", "content": answer_for_countinue_dialog})
+        save_message_in_db(chat_id, "assistant", answer_for_countinue_dialog)
+        markup = types.InlineKeyboardMarkup()
+        if(count_questions_users[chat_id] < 6):
+            button = [types.InlineKeyboardButton(text="Ввести уточняющее сообщение", callback_data="question_custom"),
+                    types.InlineKeyboardButton(text="Вернуться в начало", callback_data="start")
+                ]
+        else:
+            button = [types.InlineKeyboardButton(text="Вернуться в начало", callback_data="start")]
 
-        
-while True:
-    try:
-        bot.polling(none_stop=True)
+        markup.add(*button)
+        bot.send_message(chat_id=message_2.chat.id, text = "Пожалуйста, выберите дальнейшее действие", reply_markup=markup)
 
-    except Exception as e:
-        print(e)  # или просто print(e) если у вас логгера нет,
-        time.sleep(15)
+
+async def websocket_proactiv_bot(chat_id):
+    wanted_simbols = [".", ":"]
+
+    context_str = take_history_dialog_from_db(chat_id)
+    question_id = 666
+    role = 'Аналитик'
+    specialization = 'Специалист'
+    count_for_pro_activity = 101
+    question = 'without'
+    async with websockets.connect(WEBSOCKET_URL) as websocket:
+        await websocket.send(question) # Отправляем вопрос
+        await websocket.send(role)
+        await websocket.send(specialization)
+        await websocket.send(str(question_id))
+        await websocket.send(context_str)
+        await websocket.send(str(count_for_pro_activity))
+        try:
+            full_answer = ""
+            while True:
+                answer_part = await websocket.recv()  # Получаем ответ частями
+                if answer_part:
+                    for char in answer_part:
+                        if (char in wanted_simbols):
+                            answer_part += "\n"
+
+                    full_answer += answer_part
+                else:
+                    print("Получено пустое сообщение от WebSocket.")
+            
+        except websockets.exceptions.ConnectionClosed:
+            bot.send_message(chat_id=chat_id, text = full_answer)
+
+current_timezone = time.tzname
+print(f"Текущий часовой пояс: {current_timezone}")     
+current_timenow = datetime.now(moscow_tz).strftime("%H:%M")
+print(f"Текущий часовой пояс:{current_timenow}")
+# Запуск планировщика в отдельном потоке
+threading.Thread(target=run_async_task, daemon=True).start()
+bot.polling(none_stop=False)
+
+
