@@ -12,12 +12,25 @@ import schedule
 from datetime import datetime, UTC 
 import threading
 import pytz
+from sqlalchemy import create_engine # для базы данных
+from sqlalchemy.orm import sessionmaker # для базы данных
 load_dotenv()
 
 WEBSOCKET_URL = "ws://127.0.0.1:8000/ws"
 moscow_tz = pytz.timezone('Europe/Moscow')
 
+# для базы данных
 DATABASE_URL = "sqlite:////app/src/main_version/DATABASE_URL"
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+# конец
 
 dialogue_context = {}
 count_questions_users = {}
