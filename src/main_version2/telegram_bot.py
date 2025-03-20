@@ -61,7 +61,7 @@ user_data = {}
 
 # Функция для дообогащения промпта
 
-#conn = sqlite3.connect('AI_agent.db')
+#conn = sqlite3.connect('DATABASE_URL')
 #cursor = conn.cursor()
 #cursor.execute('''
 #DROP TABLE Reminder
@@ -73,7 +73,7 @@ user_data = {}
 
 def init_db():
     # Подключаемся к базе данных (или создаем ее, если она не существует)
-    conn = sqlite3.connect('AI_agent.db')
+    conn = sqlite3.connect('DATABASE_URL')
     cursor = conn.cursor()
 
     try:
@@ -122,7 +122,7 @@ init_db()
 
 def save_message_in_db(chat_id, role, message):
     try:
-        conn = sqlite3.connect('AI_Agent.db')
+        conn = sqlite3.connect('DATABASE_URL')
         cursor = conn.cursor()
         time = datetime.now() 
         cursor.execute('''
@@ -136,7 +136,7 @@ def save_message_in_db(chat_id, role, message):
         print( f"Ошибка при сохранении сообщения в историю: {e}")
 
 def take_history_dialog_from_db(chat_id):
-    conn = sqlite3.connect('AI_Agent.db') 
+    conn = sqlite3.connect('DATABASE_URL') 
     cursor = conn.cursor()
 
     # Запрос для получения истории сообщений в одну строку по user_id
@@ -161,7 +161,7 @@ def take_history_dialog_from_db(chat_id):
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.chat.id
-    conn = sqlite3.connect('AI_Agent.db')
+    conn = sqlite3.connect('DATABASE_URL')
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM Users WHERE user_id = ?", (user_id,))
     existing_user = cursor.fetchone()
@@ -230,7 +230,7 @@ def process_reminder_input(message, call):
         datetime.strptime(time_str, "%H:%M")  # Если время не в формате HH:MM, выбросится исключение
         
         # Сохраняем напоминание в базу данных
-        conn = sqlite3.connect('AI_Agent.db')
+        conn = sqlite3.connect('DATABASE_URL')
         cursor = conn.cursor()
         cursor.execute(
             "INSERT INTO Reminder (user_id, reminder_text, reminder_time) VALUES (?, ?, ?)",
@@ -254,7 +254,7 @@ def process_reminder_input(message, call):
 # Асинхронная функция для проверки и отправки напоминаний
 async def check():
     while True:
-        conn = sqlite3.connect('AI_Agent.db')
+        conn = sqlite3.connect('DATABASE_URL')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         
@@ -359,7 +359,7 @@ def choose_menu(call):
 def handle_role_specialization(call):
     user_id = call.message.chat.id
     data = call.data
-    conn = sqlite3.connect('AI_Agent.db')
+    conn = sqlite3.connect('DATABASE_URL')
     cursor = conn.cursor()
     specialization_mapping = {
         "specsql_analyst": "Аналитик",
