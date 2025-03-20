@@ -22,7 +22,7 @@ moscow_tz = pytz.timezone('Europe/Moscow')
 # для базы данных
 DATABASE_URL = "sqlite:////app/src/main_version/DATABASE_URL"
 engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=True, autoflush=True, bind=engine)
 
 def get_db():
     db = SessionLocal()
