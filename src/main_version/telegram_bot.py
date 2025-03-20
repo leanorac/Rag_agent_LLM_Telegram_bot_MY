@@ -20,7 +20,11 @@ WEBSOCKET_URL = "ws://127.0.0.1:8000/ws"
 moscow_tz = pytz.timezone('Europe/Moscow')
 
 # для базы данных
-DATABASE_URL = "sqlite:////app/src/main_version/DATABASE_URL"
+# Получаем значение DATABASE_URI из переменных окружения
+DATABASE_URI = os.getenv("DATABASE_URL", "sqlite:////app/src/main_version/AI_agent.db")
+
+#DATABASE_URL = "sqlite:////app/src/main_version/DATABASE_URL"
+#DATABASE_URL = "sqlite:////app/DATABASE_URL"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=True, autoflush=True, bind=engine)
 
